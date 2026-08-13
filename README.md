@@ -37,7 +37,7 @@ brew install cloudflared
 
 ### 4. Install dependencies
 
-pip install -r requirements.txt
+no need
 
 ### 5. Free up port 8080 (if already in use)
 
