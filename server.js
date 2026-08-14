@@ -69,14 +69,32 @@ if (!fs.existsSync(MODEL_DIR)) fs.mkdirSync(MODEL_DIR);
 const sessions = new Map();
 // finalized sessions (merged) tracked to reject late uploads
 const finalized = new Set();
-
 // merging locks to prevent concurrent merge runs for the same session
 const merging = new Set();
+// explicit upload/finalize state for the session to avoid the finalize-vs-upload race
+const sessionState = new Map();
+
+function markSessionFinalized(id) {
+  if (!id) return;
+  finalized.add(id);
+  sessionState.set(id, 'finalized');
+}
+
+function canAcceptUpload(id) {
+  if (!id) return false;
+  if (finalized.has(id) || merging.has(id)) return false;
+  const state = sessionState.get(id);
+  return state !== 'finalizing' && state !== 'finalized';
+}
 
 // initialize finalized set from any already-merged .webm files
 try{
   for (const f of fs.readdirSync(REC_DIR)){
-    if (f.endsWith('.webm')) finalized.add(path.basename(f, '.webm'));
+    if (f.endsWith('.webm')) {
+      const id = path.basename(f, '.webm');
+      finalized.add(id);
+      sessionState.set(id, 'finalized');
+    }
   }
 }catch(e){ /* ignore */ }
 
@@ -128,32 +146,39 @@ function touchSession(id) {
   const s = sessions.get(id) || { lastSeen: 0, chunkCount: 0 };
   s.lastSeen = Date.now();
   sessions.set(id, s);
+  sessionState.set(id, 'active');
 }
 
 function mergeSession(id) {
   const dir = sessionDir(id);
-  if (!fs.existsSync(dir)) return;
-
   const outPath = path.join(REC_DIR, `${id}.webm`);
+
+  if (!fs.existsSync(dir) && !fs.existsSync(outPath)) {
+    sessions.delete(id);
+    sessionState.delete(id);
+    return;
+  }
 
   // If a final file already exists for this session, clean up any stray
   // chunk files and mark the session finalized — do not overwrite the final.
   if (fs.existsSync(outPath)) {
-    const files = fs.readdirSync(dir).filter(f => f.startsWith('chunk-')).sort();
-    for (const f of files) {
-      try { fs.unlinkSync(path.join(dir, f)); } catch(e) { /* ignore */ }
-    }
-    try { fs.rmdirSync(dir); } catch(e) { /* ignore */ }
+    try {
+      const files = fs.existsSync(dir) ? fs.readdirSync(dir).filter(f => f.startsWith('chunk-')).sort() : [];
+      for (const f of files) {
+        try { fs.unlinkSync(path.join(dir, f)); } catch(e) { /* ignore */ }
+      }
+      if (fs.existsSync(dir)) try { fs.rmdirSync(dir); } catch(e) { /* ignore */ }
+    } catch(e) { /* ignore */ }
     sessions.delete(id);
-    finalized.add(id);
-    // previously wrote a .finalized marker file here; no longer needed
-    console.log(`[merged] final exists for ${id}, cleaned up ${files.length} chunks`);
+    markSessionFinalized(id);
+    console.log(`[merged] final exists for ${id}, cleaned up stray chunks`);
     return;
   }
 
   // Prevent concurrent merges for the same session
   if (merging.has(id)) return;
   merging.add(id);
+  sessionState.set(id, 'finalizing');
   try {
     const files = fs.readdirSync(dir)
       .filter(f => f.startsWith('chunk-'))
@@ -220,14 +245,16 @@ function mergeSession(id) {
     for (const f of files) try { fs.unlinkSync(path.join(dir, f)); } catch(e) { /* ignore */ }
     try { fs.rmdirSync(dir); } catch(e) { /* ignore */ }
     sessions.delete(id);
-
-    // mark finalized so late uploads are rejected
-    finalized.add(id);
-    // previously wrote a .finalized marker file here; no longer needed
+    markSessionFinalized(id);
 
     console.log(`[merged] ${id} -> ${outPath} (${written} chunks)`);
   } finally {
     merging.delete(id);
+    if (fs.existsSync(outPath)) {
+      markSessionFinalized(id);
+    } else {
+      sessionState.delete(id);
+    }
   }
 }
 
@@ -320,9 +347,8 @@ const server = http.createServer(async (req, res) => {
       const idx = parseInt(req.headers['x-chunk-index'], 10);
       if (!id || Number.isNaN(idx)) { res.writeHead(400); res.end('bad session/index'); return; }
 
-      // refuse uploads for sessions that have already been finalized
       const finalPath = path.join(REC_DIR, `${id}.webm`);
-      if (finalized.has(id) || fs.existsSync(finalPath)) {
+      if (!canAcceptUpload(id) || fs.existsSync(finalPath)) {
         res.writeHead(410); res.end('session finalized'); return;
       }
 
@@ -330,8 +356,20 @@ const server = http.createServer(async (req, res) => {
       try { fs.mkdirSync(dir, { recursive: true }); } catch(e) { /* ignore */ }
 
       const body = await readBody(req);
+      if (!canAcceptUpload(id) || fs.existsSync(finalPath)) {
+        res.writeHead(410); res.end('session finalized'); return;
+      }
+
       const chunkName = `chunk-${String(idx).padStart(4, '0')}.webm`;
-      fs.writeFileSync(path.join(dir, chunkName), body);
+      const chunkPath = path.join(dir, chunkName);
+      try {
+        fs.writeFileSync(chunkPath, body);
+      } catch (e) {
+        if (e && e.code === 'ENOENT') {
+          res.writeHead(409); res.end('session closed'); return;
+        }
+        throw e;
+      }
 
       touchSession(id);
       const s = sessions.get(id);
@@ -398,11 +436,19 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, () => {
-  console.log(`Snap Web server running: http://localhost:${PORT}`);
-  console.log(`Recordings will be saved to: ${REC_DIR}`);
-  console.log('');
-  console.log(`Access URL (share only this): http://localhost:${PORT}/?key=${AUTH_TOKEN}`);
-  console.log('When tunneling, swap the host for your tunnel URL but keep the ?key=... part.');
-  console.log('Set SNAP_TOKEN=yourvalue as an env var to pin this token across restarts.');
-});
+if (require.main === module) {
+  server.listen(PORT, () => {
+    console.log(`Snap Web server running: http://localhost:${PORT}`);
+    console.log(`Recordings will be saved to: ${REC_DIR}`);
+    console.log('');
+    console.log(`Access URL (share only this): http://localhost:${PORT}/?key=${AUTH_TOKEN}`);
+    console.log('When tunneling, swap the host for your tunnel URL but keep the ?key=... part.');
+    console.log('Set SNAP_TOKEN=yourvalue as an env var to pin this token across restarts.');
+  });
+}
+
+module.exports = {
+  canAcceptUpload,
+  markSessionFinalized,
+  safeSessionId,
+};
